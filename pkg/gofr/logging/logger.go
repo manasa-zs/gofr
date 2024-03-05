@@ -40,6 +40,7 @@ type logger struct {
 	normalOut  io.Writer
 	errorOut   io.Writer
 	isTerminal bool
+	logChannel chan logEntry
 }
 
 type logEntry struct {
@@ -51,11 +52,6 @@ type logEntry struct {
 func (l *logger) logf(level Level, format string, args ...interface{}) {
 	if level < l.level {
 		return
-	}
-
-	out := l.normalOut
-	if level >= ERROR {
-		out = l.errorOut
 	}
 
 	entry := logEntry{
@@ -72,10 +68,34 @@ func (l *logger) logf(level Level, format string, args ...interface{}) {
 		entry.Message = fmt.Sprintf(format+"", args...) // TODO - this is stupid. We should not need empty string.
 	}
 
-	if l.isTerminal {
-		l.prettyPrint(entry, out)
-	} else {
-		_ = json.NewEncoder(out).Encode(entry)
+	select {
+	case l.logChannel <- entry:
+	default:
+		// Drop the log entry if the log channel is full
+	}
+
+	//if l.isTerminal {
+	//	l.prettyPrint(entry, out)
+	//} else {
+	//	_ = json.NewEncoder(out).Encode(entry)
+	//}
+}
+
+func (l *logger) startLogging() {
+	for {
+		select {
+		case entry := <-l.logChannel:
+			out := l.normalOut
+			if l.level >= ERROR {
+				out = l.errorOut
+			}
+
+			if l.isTerminal {
+				l.prettyPrint(entry, out)
+			} else {
+				_ = json.NewEncoder(out).Encode(entry)
+			}
+		}
 	}
 }
 
@@ -200,8 +220,12 @@ func NewLogger(level Level) Logger {
 	}
 
 	l.level = level
+	l.logChannel = make(chan logEntry, 100000)
 
 	l.isTerminal = checkIfTerminal(l.normalOut)
+
+	// Start the goroutine responsible for logging
+	go l.startLogging()
 
 	return l
 }

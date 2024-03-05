@@ -1,8 +1,11 @@
 package main
 
 import (
-	"gofr.dev/pkg/gofr/logging"
+	"net/http"
 	"testing"
+	"time"
+
+	"gofr.dev/pkg/gofr"
 )
 
 //
@@ -57,12 +60,44 @@ import (
 //	assert.NotNil(t, err)
 //}
 
-func BenchmarkGoFrLoggingSync(b *testing.B) {
-	l := logging.NewLogger(logging.INFO)
+//func BenchmarkGoFrLoggingWithoutServer(b *testing.B) {
+//	l := logging.NewLogger(logging.INFO)
+//
+//	for n := 0; n < b.N; n++ {
+//		for i := 0; i < 100000; i++ {
+//			l.Info("Benchmarking log performance")
+//		}
+//	}
+//}
 
-	for n := 0; n < b.N; n++ {
+func BenchmarkGoFrLoggingHTTPServer(b *testing.B) {
+	a := gofr.New()
+
+	a.GET("/benchmark", func(c *gofr.Context) (interface{}, error) {
+		c.Log("Processing benchmark request")
+		return "Benchmark completed", nil
+	})
+
+	go func() {
+		a.Run()
+	}()
+
+	time.Sleep(2 * time.Second)
+
+	done := make(chan struct{})
+
+	// Send requests concurrently in a goroutine
+	go func() {
 		for i := 0; i < 10000; i++ {
-			l.Info("Benchmarking log performance")
+			resp, err := http.Get("http://localhost:9000/benchmark")
+			if err != nil {
+				b.Fatalf("failed to send request: %v", err)
+			}
+
+			resp.Body.Close()
 		}
-	}
+		done <- struct{}{}
+	}()
+
+	<-done
 }

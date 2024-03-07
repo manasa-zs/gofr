@@ -243,7 +243,7 @@ func NewLogger(level Level) Logger {
 	}
 
 	l.level = level
-	l.logChannel = make(chan logEntry, 100000)
+	l.logChannel = make(chan logEntry, 1000)
 
 	l.isTerminal = checkIfTerminal(l.normalOut)
 

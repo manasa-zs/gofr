@@ -17,7 +17,10 @@ import (
 	"gofr.dev/pkg/gofr/service"
 )
 
-const fileMode = 0644
+const (
+	fileMode      = 0644
+	logBufferSize = 100
+)
 
 type Logger interface {
 	Debug(args ...interface{})
@@ -70,17 +73,8 @@ func (l *logger) logf(level Level, format string, args ...interface{}) {
 		entry.Message = fmt.Sprintf(format+"", args...) // TODO - this is stupid. We should not need empty string.
 	}
 
-	select {
-	case l.logChannel <- entry:
-	default:
-		// Drop the log entry if the log channel is full
-	}
-
-	//if l.isTerminal {
-	//	l.prettyPrint(entry, out)
-	//} else {
-	//	_ = json.NewEncoder(out).Encode(entry)
-	//}
+	l.logChannel <- entry
+	fmt.Println("elements in channel", len(l.logChannel))
 }
 
 func (l *logger) startLogging() {
@@ -243,7 +237,7 @@ func NewLogger(level Level) Logger {
 	}
 
 	l.level = level
-	l.logChannel = make(chan logEntry, 100)
+	l.logChannel = make(chan logEntry, logBufferSize)
 
 	l.isTerminal = checkIfTerminal(l.normalOut)
 

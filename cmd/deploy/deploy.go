@@ -25,6 +25,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 	cmd := exec.Command("sh", "-c", "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app/main .")
 	_, err = cmd.CombinedOutput()
 	if err != nil {
+		os.RemoveAll("app")
 		ctx.Errorf("Error executing command:", err)
 
 		return nil, err
@@ -34,6 +35,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	err = copyDir("configs", "app/configs")
 	if err != nil {
+		os.RemoveAll("app")
 		ctx.Errorf("Failed to copy configs directory to app:", err)
 
 		return nil, err
@@ -43,6 +45,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	err = zipSource("app", "app.zip")
 	if err != nil {
+		os.RemoveAll("app")
 		ctx.Errorf("Failed to zip directory:", err)
 
 		return nil, err
@@ -54,6 +57,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	err = unzipSource("app.zip", "")
 	if err != nil {
+		os.RemoveAll("app.zip")
 		ctx.Errorf("Failed to unzip directory:", err)
 
 		return nil, err
@@ -65,6 +69,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	err = os.Chdir("app")
 	if err != nil {
+
 		ctx.Errorf("Failed to change current directory to app:", err)
 
 		return nil, err
@@ -74,6 +79,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	err = CreateDockerfile()
 	if err != nil {
+		os.RemoveAll("app")
 		ctx.Errorf("Failed to create Dockerfile:", err)
 
 		return nil, err
@@ -89,6 +95,59 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 	}
 
 	fmt.Println("Dockerization Successfuly")
+
+	cmd = exec.Command("gcloud", "auth", "configure-docker", "us-central1-docker.pkg.dev")
+	if err := cmd.Run(); err != nil {
+		ctx.Errorf("Error executing command:", err)
+
+		return nil, err
+	}
+
+	fmt.Println("GCloud Auth Docker Cnfiguration Success")
+
+	cmd = exec.Command("docker", "tag", buildName,
+		"us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName)
+	if err := cmd.Run(); err != nil {
+		ctx.Errorf("Error executing command:", err)
+
+		return nil, err
+	}
+
+	fmt.Println("Docker Tag Success")
+
+	cmd = exec.Command("docker", "push",
+		"us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName)
+	if err := cmd.Run(); err != nil {
+		ctx.Errorf("Error executing command:", err)
+
+		return nil, err
+	}
+
+	fmt.Println("Docker Push Success")
+
+	cmd = exec.Command("gcloud", "container", "clusters", "get-credentials", "gofr-test",
+		"--region=us-central1", "--project=long-base-417006")
+	if err := cmd.Run(); err != nil {
+		ctx.Errorf("Error executing command:", err)
+
+		return nil, err
+	}
+
+	fmt.Println("gcloud cluster success")
+
+	cmd = exec.Command("kubectl", "set", "image", "deployment/order-service", "order-service=us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName,
+		"--namespace", "sample-api")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Println("Error executing command:", err)
+		fmt.Println("Detailed error output:", string(output))
+		return nil, err
+	}
+
+	fmt.Println("Command executed successfully.")
+
+	fmt.Println("image changed")
 
 	os.RemoveAll("app")
 

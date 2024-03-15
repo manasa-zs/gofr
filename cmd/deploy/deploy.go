@@ -4,149 +4,102 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
-	"gofr.dev/pkg/gofr"
 	"io"
+	"io/ioutil"
 	"mime/multipart"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+
+	"gofr.dev/pkg/gofr"
 )
 
+// Constants
+const (
+	destinationDir  = "app"
+	sourceDir       = "configs"
+	zipFileName     = "app.zip"
+	deployEndpoint  = "deploy"
+	executableName  = "main"
+	dockerfileDir   = "app"
+	dockerfileName  = "Dockerfile"
+	dockerfilePort  = 8000
+	dockerfileCMD   = "/main"
+	linuxBuildFlags = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64"
+)
+
+// Run orchestrates the deployment process.
 func Run(ctx *gofr.Context) (interface{}, error) {
-	err := os.Mkdir("app", os.ModePerm)
-	if err != nil {
-		ctx.Errorf("Failed to create app directory:", err)
+	// Clean up previous artifacts
+	defer cleanup()
 
-		return nil, err
+	// Create necessary directories
+	if err := os.Mkdir(destinationDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create %s directory: %v", destinationDir, err)
 	}
 
-	fmt.Println("Directory app created successfully")
-
-	cmd := exec.Command("sh", "-c", "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app/main .")
-	_, err = cmd.CombinedOutput()
-	if err != nil {
-		os.RemoveAll("app")
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
+	// Build binary
+	if err := buildBinary(ctx); err != nil {
+		return nil, fmt.Errorf("failed to build binary: %v", err)
 	}
 
-	fmt.Println("Binary creation successful")
-
-	err = copyDir("configs", "app/configs")
-	if err != nil {
-		os.RemoveAll("app")
-		ctx.Errorf("Failed to copy configs directory to app:", err)
-
-		return nil, err
+	// Copy configurations
+	if err := copyDirectory(sourceDir, filepath.Join(destinationDir, sourceDir)); err != nil {
+		return nil, fmt.Errorf("failed to copy configurations: %v", err)
 	}
 
-	fmt.Println("Copied configs to app directory successful")
-
-	err = CreateDockerfile()
-	if err != nil {
-		os.RemoveAll("app")
-
-		ctx.Errorf("Failed to create Dockerfile :%v", err)
+	// Create Dockerfile
+	if err := createDockerfile(); err != nil {
+		return nil, fmt.Errorf("failed to create Dockerfile: %v", err)
 	}
 
-	err = zipSource("app", "app.zip")
-	if err != nil {
-		os.RemoveAll("app")
-		ctx.Errorf("Failed to zip directory:", err)
-
-		return nil, err
+	// Zip the source directory
+	if err := zipSource(destinationDir, zipFileName); err != nil {
+		return nil, fmt.Errorf("failed to zip directory: %v", err)
 	}
 
-	fmt.Println("Zipped Successfully")
-
-	os.RemoveAll("app")
-
-	service := ctx.GetHTTPService("deployment")
-
-	var writerBody bytes.Buffer
-	writer := multipart.NewWriter(&writerBody)
-
-	file, err := os.Open("app.zip")
-	if err != nil {
-		os.RemoveAll("app.zip")
-
-		return nil, err
+	// Deploy the zip file
+	if err := deployZip(ctx); err != nil {
+		return nil, fmt.Errorf("failed to deploy: %v", err)
 	}
-
-	// Add the file as a form data field
-	fileWriter, err := writer.CreateFormFile("file", "app.zip")
-	if err != nil {
-		os.RemoveAll("app.zip")
-
-		return nil, err
-	}
-
-	_, err = io.Copy(fileWriter, file)
-	if err != nil {
-		os.RemoveAll("app.zip")
-
-		return nil, err
-	}
-
-	file.Close()
-
-	// Close the multipart writer
-	err = writer.Close()
-	if err != nil {
-		os.RemoveAll("app.zip")
-
-		return nil, err
-	}
-
-	resp, err := service.PostWithHeaders(ctx, "deploy", nil, writerBody.Bytes(), map[string]string{"Content-Type": writer.FormDataContentType()})
-	if err != nil {
-		os.RemoveAll("app.zip")
-		return nil, err
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		os.RemoveAll("app.zip")
-		return nil, err
-	}
-
-	fmt.Println(string(body))
-
-	os.RemoveAll("app.zip")
 
 	return nil, nil
 }
 
-// Function to copy a directory recursively
-func copyDir(src, dst string) error {
-	fileInfo, err := os.Stat(src)
+// buildBinary compiles the Go code into an executable binary.
+func buildBinary(ctx *gofr.Context) error {
+	cmd := exec.Command("sh", "-c", linuxBuildFlags+" go build -o "+destinationDir+"/"+executableName+" .")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error executing command: %s, %v", output, err)
+	}
+	fmt.Println("Binary created successfully")
+	return nil
+}
+
+// copyDirectory copies a directory recursively.
+func copyDirectory(src, dst string) error {
+	err := os.MkdirAll(dst, os.ModePerm)
 	if err != nil {
 		return err
 	}
 
-	err = os.MkdirAll(dst, fileInfo.Mode())
+	files, err := ioutil.ReadDir(src)
 	if err != nil {
 		return err
 	}
 
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
+	for _, file := range files {
+		srcFile := filepath.Join(src, file.Name())
+		destFile := filepath.Join(dst, file.Name())
 
-	for _, entry := range entries {
-		sourcePath := filepath.Join(src, entry.Name())
-		destinationPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			err = copyDir(sourcePath, destinationPath)
-			if err != nil {
+		if file.IsDir() {
+			if err := copyDirectory(srcFile, destFile); err != nil {
 				return err
 			}
 		} else {
-			err = copyFile(sourcePath, destinationPath)
-			if err != nil {
+			if err := copyFile(srcFile, destFile); err != nil {
 				return err
 			}
 		}
@@ -154,64 +107,75 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// Function to copy a file
+// copyFile copies a file from source to destination.
 func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
+	source, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer source.Close()
 
-	destinationFile, err := os.Create(dst)
+	destination, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer destinationFile.Close()
+	defer destination.Close()
 
-	_, err = io.Copy(destinationFile, sourceFile)
+	_, err = io.Copy(destination, source)
+	return err
+}
+
+// createDockerfile creates a Dockerfile in the specified directory.
+func createDockerfile() error {
+	content := fmt.Sprintf(`FROM alpine:latest
+RUN apk add --no-cache tzdata ca-certificates
+COPY /%s /%s
+RUN chmod +x /%s
+EXPOSE %d
+CMD ["%s"]`,
+		executableName, executableName, executableName, dockerfilePort, dockerfileCMD)
+
+	file, err := os.Create(filepath.Join(dockerfileDir, dockerfileName))
 	if err != nil {
 		return err
 	}
+	defer file.Close()
+
+	if _, err := file.WriteString(content); err != nil {
+		return err
+	}
+
+	fmt.Println("Dockerfile created successfully!")
 	return nil
 }
 
+// zipSource zips the source directory.
 func zipSource(source, target string) error {
-	// 1. Create a ZIP file and zip.Writer
-	f, err := os.Create(target)
+	file, err := os.Create(target)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	writer := zip.NewWriter(f)
-	defer writer.Close()
+	zipWriter := zip.NewWriter(file)
+	defer zipWriter.Close()
 
-	// 2. Go through all the files of the source
 	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// 3. Create a local file header
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
 		}
 
-		// set compression
-		header.Method = zip.Deflate
-
-		// 4. Set relative path of a file as the header name
-		header.Name, err = filepath.Rel(filepath.Dir(source), path)
-		if err != nil {
-			return err
-		}
+		header.Name = strings.TrimPrefix(strings.TrimPrefix(path, source), string(filepath.Separator))
 		if info.IsDir() {
 			header.Name += "/"
 		}
 
-		// 5. Create writer for the file header and save content of the file
-		headerWriter, err := writer.CreateHeader(header)
+		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			return err
 		}
@@ -220,55 +184,64 @@ func zipSource(source, target string) error {
 			return nil
 		}
 
-		f, err := os.Open(path)
+		file, err := os.Open(path)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer file.Close()
 
-		_, err = io.Copy(headerWriter, f)
+		_, err = io.Copy(writer, file)
 		return err
 	})
 }
 
-// CreateDockerfile creates a Dockerfile with the specified content.
-func CreateDockerfile() error {
-	// Define the content of the Dockerfile
-	dockerfileContent := `FROM alpine:latest
+// deployZip deploys the zip file.
+func deployZip(ctx *gofr.Context) error {
+	service := ctx.GetHTTPService("deployment")
 
-RUN apk add --no-cache tzdata ca-certificates
-
-COPY ./main /main
-COPY /configs /configs
-
-RUN chmod +x /main
-
-EXPOSE 8000
-CMD ["/main"]
-`
-
-	// Create a new file named Dockerfile
-	file, err := os.Create("Dockerfile")
+	file, err := os.Open(zipFileName)
 	if err != nil {
 		return err
 	}
-
-	// Write the content to the Dockerfile
-	_, err = file.WriteString(dockerfileContent)
-	if err != nil {
-		return err
-	}
-
-	file.Close()
-
-	// Create a new file named Dockerfile
-	err = os.Rename("Dockerfile", "app/Dockerfile")
-	if err != nil {
-		return err
-	}
-
 	defer file.Close()
 
-	fmt.Println("Dockerfile created successfully!")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	defer writer.Close()
+
+	part, err := writer.CreateFormFile("file", zipFileName)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(part, file); err != nil {
+		return err
+	}
+
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	fmt.Println("Deployment Started")
+
+	resp, err := service.PostWithHeaders(ctx, deployEndpoint, nil, body.Bytes(), map[string]string{"Content-Type": writer.FormDataContentType()})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Deployd Successfully : %v", string(responseBody))
+
 	return nil
+}
+
+// cleanup removes temporary files and directories.
+func cleanup() {
+	os.RemoveAll(destinationDir)
+	os.RemoveAll(zipFileName)
 }

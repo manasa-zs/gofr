@@ -8,7 +8,7 @@ import (
 func main() {
 	app := gofr.NewCMD()
 
-	app.AddHTTPService("deployment", "localhost:9000")
+	app.AddHTTPService("deployment", "http://172.0.243.205:8000")
 
 	app.SubCommand("deploy", deploy.Run)
 

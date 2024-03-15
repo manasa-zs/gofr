@@ -2,10 +2,11 @@ package deploy
 
 import (
 	"archive/zip"
+	"bytes"
 	"fmt"
-	"github.com/google/uuid"
 	"gofr.dev/pkg/gofr"
 	"io"
+	"mime/multipart"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,13 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	fmt.Println("Copied configs to app directory successful")
 
+	err = CreateDockerfile()
+	if err != nil {
+		os.RemoveAll("app")
+
+		ctx.Errorf("Failed to create Dockerfile :%v", err)
+	}
+
 	err = zipSource("app", "app.zip")
 	if err != nil {
 		os.RemoveAll("app")
@@ -55,101 +63,58 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 
 	os.RemoveAll("app")
 
-	err = unzipSource("app.zip", "")
+	service := ctx.GetHTTPService("deployment")
+
+	var writerBody bytes.Buffer
+	writer := multipart.NewWriter(&writerBody)
+
+	file, err := os.Open("app.zip")
 	if err != nil {
 		os.RemoveAll("app.zip")
-		ctx.Errorf("Failed to unzip directory:", err)
 
 		return nil, err
 	}
 
-	fmt.Println("Unzipped Successfully")
+	// Add the file as a form data field
+	fileWriter, err := writer.CreateFormFile("file", "app.zip")
+	if err != nil {
+		os.RemoveAll("app.zip")
+
+		return nil, err
+	}
+
+	_, err = io.Copy(fileWriter, file)
+	if err != nil {
+		os.RemoveAll("app.zip")
+
+		return nil, err
+	}
+
+	file.Close()
+
+	// Close the multipart writer
+	err = writer.Close()
+	if err != nil {
+		os.RemoveAll("app.zip")
+
+		return nil, err
+	}
+
+	resp, err := service.PostWithHeaders(ctx, "deploy", nil, writerBody.Bytes(), map[string]string{"Content-Type": writer.FormDataContentType()})
+	if err != nil {
+		os.RemoveAll("app.zip")
+		return nil, err
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		os.RemoveAll("app.zip")
+		return nil, err
+	}
+
+	fmt.Println(string(body))
 
 	os.RemoveAll("app.zip")
-
-	err = os.Chdir("app")
-	if err != nil {
-
-		ctx.Errorf("Failed to change current directory to app:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("Changed current directory to app")
-
-	err = CreateDockerfile()
-	if err != nil {
-		os.RemoveAll("app")
-		ctx.Errorf("Failed to create Dockerfile:", err)
-
-		return nil, err
-	}
-
-	buildName := "order-service:" + uuid.New().String()
-
-	cmd = exec.Command("docker", "build", "-t", buildName, ".")
-	if err := cmd.Run(); err != nil {
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("Dockerization Successfuly")
-
-	cmd = exec.Command("gcloud", "auth", "configure-docker", "us-central1-docker.pkg.dev")
-	if err := cmd.Run(); err != nil {
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("GCloud Auth Docker Cnfiguration Success")
-
-	cmd = exec.Command("docker", "tag", buildName,
-		"us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName)
-	if err := cmd.Run(); err != nil {
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("Docker Tag Success")
-
-	cmd = exec.Command("docker", "push",
-		"us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName)
-	if err := cmd.Run(); err != nil {
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("Docker Push Success")
-
-	cmd = exec.Command("gcloud", "container", "clusters", "get-credentials", "gofr-test",
-		"--region=us-central1", "--project=long-base-417006")
-	if err := cmd.Run(); err != nil {
-		ctx.Errorf("Error executing command:", err)
-
-		return nil, err
-	}
-
-	fmt.Println("gcloud cluster success")
-
-	cmd = exec.Command("kubectl", "set", "image", "deployment/order-service", "order-service=us-central1-docker.pkg.dev/long-base-417006/zs-cloud-registry/"+buildName,
-		"--namespace", "sample-api")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Println("Error executing command:", err)
-		fmt.Println("Detailed error output:", string(output))
-		return nil, err
-	}
-
-	fmt.Println("Command executed successfully.")
-
-	fmt.Println("image changed")
-
-	os.RemoveAll("app")
 
 	return nil, nil
 }
@@ -341,6 +306,8 @@ RUN apk add --no-cache tzdata ca-certificates
 COPY ./main /main
 COPY /configs /configs
 
+RUN chmod +x /main
+
 EXPOSE 8000
 CMD ["/main"]
 `
@@ -350,13 +317,22 @@ CMD ["/main"]
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
 	// Write the content to the Dockerfile
 	_, err = file.WriteString(dockerfileContent)
 	if err != nil {
 		return err
 	}
+
+	file.Close()
+
+	// Create a new file named Dockerfile
+	err = os.Rename("Dockerfile", "app/Dockerfile")
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
 
 	fmt.Println("Dockerfile created successfully!")
 	return nil

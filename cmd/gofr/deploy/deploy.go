@@ -32,6 +32,12 @@ const (
 // Run orchestrates the deployment process.
 func Run(ctx *gofr.Context) (interface{}, error) {
 	// Clean up previous artifacts
+	key := ctx.Param("key")
+	if key == "" {
+		return nil, fmt.Errorf("param %v is required", "-key")
+	}
+
+	cleanup()
 	defer cleanup()
 
 	// Create necessary directories
@@ -60,7 +66,7 @@ func Run(ctx *gofr.Context) (interface{}, error) {
 	}
 
 	// Deploy the zip file
-	if err := deployZip(ctx); err != nil {
+	if err := deployZip(ctx, key); err != nil {
 		return nil, fmt.Errorf("failed to deploy: %v", err)
 	}
 
@@ -196,7 +202,7 @@ func zipSource(source, target string) error {
 }
 
 // deployZip deploys the zip file.
-func deployZip(ctx *gofr.Context) error {
+func deployZip(ctx *gofr.Context, key string) error {
 	service := ctx.GetHTTPService("deployment")
 
 	file, err := os.Open(zipFileName)
@@ -224,7 +230,7 @@ func deployZip(ctx *gofr.Context) error {
 
 	fmt.Println("Deployment Started")
 
-	resp, err := service.PostWithHeaders(ctx, deployEndpoint, nil, body.Bytes(), map[string]string{"Content-Type": writer.FormDataContentType()})
+	resp, err := service.PostWithHeaders(ctx, deployEndpoint+fmt.Sprintf("?key=%v", key), nil, body.Bytes(), map[string]string{"Content-Type": writer.FormDataContentType()})
 	if err != nil {
 		return err
 	}

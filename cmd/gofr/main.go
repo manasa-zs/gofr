@@ -1,7 +1,7 @@
 package main
 
 import (
-	"gofr.dev/cmd/deploy"
+	"gofr.dev/cmd/gofr/deploy"
 	"gofr.dev/pkg/gofr"
 )
 

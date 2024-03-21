@@ -3,6 +3,7 @@ package deploy
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -236,12 +237,19 @@ func deployZip(ctx *gofr.Context, key string) error {
 	}
 	defer resp.Body.Close()
 
-	responseBody, err := ioutil.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Deployd Successfully : %v", string(responseBody))
+	var ingressURL string
+
+	err = Bind(responseBody, &ingressURL)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Deployed Successfully @ %v", ingressURL)
 
 	return nil
 }
@@ -250,4 +258,12 @@ func deployZip(ctx *gofr.Context, key string) error {
 func cleanup() {
 	os.RemoveAll(destinationDir)
 	os.RemoveAll(zipFileName)
+}
+
+func Bind(body []byte, data interface{}) error {
+	resp := struct {
+		Data interface{} `json:"data"`
+	}{Data: data}
+
+	return json.Unmarshal(body, &resp)
 }

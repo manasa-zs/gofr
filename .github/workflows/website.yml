@@ -65,7 +65,7 @@ jobs:
       image: ghcr.io/zopsmart/gha-images:deployments-0.1.3
       options: --rm
     env:
-      image: ${{needs.dockerize.outputs.image}}
+      image: ${{ needs.dockerize.outputs.image }}
 
     steps:
       - name: Checkout Code
